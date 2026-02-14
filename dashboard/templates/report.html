@@ -1,0 +1,67 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{{ project_key }} - Auto-Draft Report</title>
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+    <header class="top-bar">
+        <h1 class="logo">Auto-TPM Risk Radar</h1>
+        <nav>
+            <a href="/">Dashboard</a>
+            <a href="/project/{{ project_key }}">{{ project_key }}</a>
+            <a href="/report/{{ project_key }}" class="active">Report</a>
+        </nav>
+    </header>
+
+    <main class="container">
+        <section class="report-header">
+            <h2>Executive Status Report: {{ project_key }}</h2>
+            <div class="report-actions">
+                <button class="btn btn-primary" id="generate-btn" onclick="generateReport()">Generate Report</button>
+                <button class="btn btn-secondary" id="publish-btn" onclick="publishReport()" disabled>Publish</button>
+            </div>
+        </section>
+
+        <!-- Split-screen report interface -->
+        <div class="report-split">
+            <!-- Left Panel: AI-Generated Draft (editable) -->
+            <div class="report-panel draft-panel">
+                <h3>AI-Generated Draft <span class="badge" id="draft-status">Not Generated</span></h3>
+                <div id="report-draft" class="report-content">
+                    <div class="placeholder-message">
+                        Click "Generate Report" to create an AI-drafted status report.
+                        The report will synthesize Jira risk scores and Slack sentiment data.
+                    </div>
+                </div>
+            </div>
+
+            <!-- Right Panel: Evidence Locker -->
+            <div class="report-panel evidence-panel">
+                <h3>Evidence Locker</h3>
+                <div id="evidence-locker" class="evidence-content">
+                    <div class="evidence-section">
+                        <h4>Cited Jira Tickets</h4>
+                        <ul id="cited-tickets" class="evidence-list">
+                            <li class="placeholder-message">Evidence will appear after report generation.</li>
+                        </ul>
+                    </div>
+                    <div class="evidence-section">
+                        <h4>Slack Sentiment Context</h4>
+                        <div id="sentiment-evidence" class="evidence-list">
+                            <p class="placeholder-message">Sentiment data will appear here.</p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </main>
+
+    <script src="/static/report.js"></script>
+    <script>
+        const projectKey = '{{ project_key }}';
+    </script>
+</body>
+</html>

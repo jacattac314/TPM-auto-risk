@@ -1,0 +1,67 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{{ project_key }} - Risk Radar</title>
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+    <header class="top-bar">
+        <h1 class="logo">Auto-TPM Risk Radar</h1>
+        <nav>
+            <a href="/">Dashboard</a>
+            <a href="/project/{{ project_key }}" class="active">{{ project_key }}</a>
+            <a href="/report/{{ project_key }}">Generate Report</a>
+        </nav>
+    </header>
+
+    <main class="container">
+        <section class="project-header">
+            <h2>Project: {{ project_key }}</h2>
+            <div class="risk-summary" id="risk-summary">
+                <div class="stat-card high"><span class="stat-number" id="high-count">-</span><span class="stat-label">High Risk</span></div>
+                <div class="stat-card medium"><span class="stat-number" id="medium-count">-</span><span class="stat-label">Medium Risk</span></div>
+                <div class="stat-card low"><span class="stat-number" id="low-count">-</span><span class="stat-label">Low Risk</span></div>
+                <div class="stat-card total"><span class="stat-number" id="total-count">-</span><span class="stat-label">Total Tickets</span></div>
+            </div>
+        </section>
+
+        <!-- Risk Radar Scatter Plot -->
+        <section class="radar-section">
+            <h3>Risk Radar</h3>
+            <p class="subtitle">X: Technical Complexity | Y: Team Sentiment | Size: Story Points | Color: Risk Level</p>
+            <div class="radar-container">
+                <canvas id="radar-chart" width="800" height="500"></canvas>
+            </div>
+        </section>
+
+        <!-- Ticket Risk Table -->
+        <section class="tickets-section">
+            <h3>Ticket Risk Details</h3>
+            <table class="risk-table" id="risk-table">
+                <thead>
+                    <tr>
+                        <th>Key</th>
+                        <th>Summary</th>
+                        <th>Status</th>
+                        <th>Risk Score</th>
+                        <th>Risk Level</th>
+                        <th>Days in Status</th>
+                        <th>Dependencies</th>
+                    </tr>
+                </thead>
+                <tbody id="risk-table-body">
+                    <tr><td colspan="7" class="loading">Loading risk data...</td></tr>
+                </tbody>
+            </table>
+        </section>
+    </main>
+
+    <script src="/static/radar.js"></script>
+    <script>
+        const projectKey = '{{ project_key }}';
+        loadProjectData(projectKey);
+    </script>
+</body>
+</html>

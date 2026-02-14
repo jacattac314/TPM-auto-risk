@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Auto-TPM Risk Radar</title>
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+    <header class="top-bar">
+        <h1 class="logo">Auto-TPM Risk Radar</h1>
+        <nav>
+            <a href="/" class="active">Dashboard</a>
+        </nav>
+    </header>
+
+    <main class="container">
+        <section class="hero">
+            <h2>Project Intelligence Dashboard</h2>
+            <p>AI-native risk prediction and automated status reporting for Technical Program Management.</p>
+        </section>
+
+        <section class="project-list" id="project-list">
+            <h3>Tracked Projects</h3>
+            <div class="card-grid" id="projects-grid">
+                <div class="card placeholder">
+                    <p>Enter a project key to begin tracking.</p>
+                    <form id="add-project-form" class="inline-form">
+                        <input type="text" id="project-key-input" placeholder="e.g. PROJ" required>
+                        <button type="submit" class="btn btn-primary">Track Project</button>
+                    </form>
+                </div>
+            </div>
+        </section>
+    </main>
+
+    <script>
+        document.getElementById('add-project-form').addEventListener('submit', function(e) {
+            e.preventDefault();
+            const key = document.getElementById('project-key-input').value.trim().toUpperCase();
+            if (key) {
+                window.location.href = '/project/' + encodeURIComponent(key);
+            }
+        });
+    </script>
+</body>
+</html>

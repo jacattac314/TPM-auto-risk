@@ -1,0 +1,328 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: >
+  Auto-TPM Risk Radar - AI-Native Project Intelligence Platform.
+  Deploys the serverless infrastructure for data ingestion, ML inference,
+  GenAI reporting, and the dashboard API.
+
+Parameters:
+  Environment:
+    Type: String
+    Default: dev
+    AllowedValues: [dev, staging, prod]
+
+  S3BucketName:
+    Type: String
+    Default: auto-tpm-risk-radar
+
+  JiraBaseUrl:
+    Type: String
+    Description: Base URL of the Jira instance
+
+  SlackBotTokenParamName:
+    Type: String
+    Default: /auto-tpm/slack-bot-token
+
+  BedrockModelId:
+    Type: String
+    Default: anthropic.claude-3-sonnet-20240229-v1:0
+
+  VpcId:
+    Type: AWS::EC2::VPC::Id
+    Description: VPC for network-isolated deployment
+
+  SubnetIds:
+    Type: List<AWS::EC2::Subnet::Id>
+    Description: Private subnets for Lambda and SageMaker
+
+Globals:
+  Function:
+    Runtime: python3.11
+    Timeout: 300
+    MemorySize: 512
+    Environment:
+      Variables:
+        S3_BUCKET: !Ref DataLakeBucket
+        DYNAMODB_TABLE: !Ref IngestionStateTable
+        BEDROCK_MODEL_ID: !Ref BedrockModelId
+        ENVIRONMENT: !Ref Environment
+        LOG_LEVEL: INFO
+
+Resources:
+  # ── S3 Data Lake ──────────────────────────────────────────────────
+
+  DataLakeBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub '${S3BucketName}-${Environment}'
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: aws:kms
+              KMSMasterKeyID: !Ref DataLakeKMSKey
+      VersioningConfiguration:
+        Status: Enabled
+      LifecycleConfiguration:
+        Rules:
+          - Id: BronzeRetention
+            Prefix: bronze/
+            Status: Enabled
+            ExpirationInDays: 30
+          - Id: IntelligentTiering
+            Prefix: silver/
+            Status: Enabled
+            Transitions:
+              - StorageClass: INTELLIGENT_TIERING
+                TransitionInDays: 90
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+
+  DataLakeKMSKey:
+    Type: AWS::KMS::Key
+    Properties:
+      Description: KMS key for Auto-TPM Risk Radar data encryption
+      KeyPolicy:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: RootAccess
+            Effect: Allow
+            Principal:
+              AWS: !Sub 'arn:aws:iam::${AWS::AccountId}:root'
+            Action: 'kms:*'
+            Resource: '*'
+
+  # ── DynamoDB Ingestion State ──────────────────────────────────────
+
+  IngestionStateTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub 'tpm-ingestion-state-${Environment}'
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: project_key
+          AttributeType: S
+      KeySchema:
+        - AttributeName: project_key
+          KeyType: HASH
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: true
+      SSESpecification:
+        SSEEnabled: true
+        SSEType: KMS
+        KMSMasterKeyId: !Ref DataLakeKMSKey
+
+  # ── Glue Data Catalog ────────────────────────────────────────────
+
+  GlueDatabase:
+    Type: AWS::Glue::Database
+    Properties:
+      CatalogId: !Ref AWS::AccountId
+      DatabaseInput:
+        Name: !Sub 'auto_tpm_risk_radar_${Environment}'
+        Description: Auto-TPM Risk Radar data lake catalog
+
+  GlueJiraCrawler:
+    Type: AWS::Glue::Crawler
+    Properties:
+      Name: !Sub 'tpm-jira-crawler-${Environment}'
+      Role: !GetAtt GlueCrawlerRole.Arn
+      DatabaseName: !Ref GlueDatabase
+      Targets:
+        S3Targets:
+          - Path: !Sub 's3://${DataLakeBucket}/silver/jira/'
+      Schedule:
+        ScheduleExpression: cron(0 6 * * ? *)
+      SchemaChangePolicy:
+        UpdateBehavior: UPDATE_IN_DATABASE
+        DeleteBehavior: LOG
+
+  GlueCrawlerRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: glue.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSGlueServiceRole
+      Policies:
+        - PolicyName: S3Access
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:ListBucket
+                Resource:
+                  - !GetAtt DataLakeBucket.Arn
+                  - !Sub '${DataLakeBucket.Arn}/*'
+
+  # ── Lambda Functions ─────────────────────────────────────────────
+
+  JiraIngestionFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub 'tpm-jira-ingestion-${Environment}'
+      Handler: scripts.ingest_jira.lambda_handler
+      CodeUri: ../
+      MemorySize: 1024
+      Timeout: 900
+      Environment:
+        Variables:
+          JIRA_BASE_URL: !Ref JiraBaseUrl
+          JIRA_PRIVATE_KEY_SSM_PARAM: !Sub '/auto-tpm/${Environment}/jira-private-key'
+      Policies:
+        - S3CrudPolicy:
+            BucketName: !Ref DataLakeBucket
+        - DynamoDBCrudPolicy:
+            TableName: !Ref IngestionStateTable
+        - SSMParameterReadPolicy:
+            ParameterName: !Sub 'auto-tpm/${Environment}/*'
+        - Statement:
+            Effect: Allow
+            Action:
+              - comprehend:DetectPiiEntities
+            Resource: '*'
+      Events:
+        ScheduledCrawl:
+          Type: Schedule
+          Properties:
+            Schedule: rate(6 hours)
+            Enabled: true
+
+  SlackIngestionFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub 'tpm-slack-ingestion-${Environment}'
+      Handler: scripts.ingest_slack.lambda_handler
+      CodeUri: ../
+      MemorySize: 512
+      Timeout: 600
+      Environment:
+        Variables:
+          SLACK_BOT_TOKEN_PARAM: !Ref SlackBotTokenParamName
+      Policies:
+        - S3CrudPolicy:
+            BucketName: !Ref DataLakeBucket
+        - SSMParameterReadPolicy:
+            ParameterName: !Sub 'auto-tpm/${Environment}/*'
+        - Statement:
+            Effect: Allow
+            Action:
+              - comprehend:DetectPiiEntities
+            Resource: '*'
+      Events:
+        ScheduledCrawl:
+          Type: Schedule
+          Properties:
+            Schedule: rate(1 hour)
+            Enabled: true
+
+  APIFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub 'tpm-api-${Environment}'
+      Handler: src.api.handler.lambda_handler
+      CodeUri: ../
+      MemorySize: 1024
+      Timeout: 60
+      Environment:
+        Variables:
+          SAGEMAKER_ENDPOINT: !Sub 'risk-radar-xgboost-${Environment}'
+      Policies:
+        - S3ReadPolicy:
+            BucketName: !Ref DataLakeBucket
+        - Statement:
+            Effect: Allow
+            Action:
+              - sagemaker:InvokeEndpoint
+            Resource: !Sub 'arn:aws:sagemaker:${AWS::Region}:${AWS::AccountId}:endpoint/risk-radar-xgboost-${Environment}'
+        - Statement:
+            Effect: Allow
+            Action:
+              - bedrock:InvokeModel
+            Resource: '*'
+      Events:
+        ApiGateway:
+          Type: Api
+          Properties:
+            Path: /{proxy+}
+            Method: ANY
+            RestApiId: !Ref ApiGateway
+
+  # ── API Gateway ──────────────────────────────────────────────────
+
+  ApiGateway:
+    Type: AWS::Serverless::Api
+    Properties:
+      StageName: !Ref Environment
+      Cors:
+        AllowOrigin: "'*'"
+        AllowMethods: "'GET,POST,OPTIONS'"
+        AllowHeaders: "'Content-Type,Authorization'"
+
+  # ── SNS Alerting ─────────────────────────────────────────────────
+
+  AlertTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: !Sub 'tpm-risk-radar-alerts-${Environment}'
+      KmsMasterKeyId: !Ref DataLakeKMSKey
+
+  # ── SageMaker Model Training ─────────────────────────────────────
+
+  SageMakerExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub 'tpm-sagemaker-role-${Environment}'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: sagemaker.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonSageMakerFullAccess
+      Policies:
+        - PolicyName: S3ModelAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:PutObject
+                  - s3:ListBucket
+                Resource:
+                  - !GetAtt DataLakeBucket.Arn
+                  - !Sub '${DataLakeBucket.Arn}/*'
+              - Effect: Allow
+                Action:
+                  - kms:Decrypt
+                  - kms:GenerateDataKey
+                Resource: !GetAtt DataLakeKMSKey.Arn
+
+Outputs:
+  ApiEndpoint:
+    Description: API Gateway endpoint URL
+    Value: !Sub 'https://${ApiGateway}.execute-api.${AWS::Region}.amazonaws.com/${Environment}/'
+
+  DataLakeBucketName:
+    Description: S3 data lake bucket
+    Value: !Ref DataLakeBucket
+
+  IngestionStateTableName:
+    Description: DynamoDB ingestion state table
+    Value: !Ref IngestionStateTable
+
+  AlertTopicArn:
+    Description: SNS topic for alerts
+    Value: !Ref AlertTopic
