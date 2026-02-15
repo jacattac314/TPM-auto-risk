@@ -138,6 +138,34 @@ function renderEvidence(report) {
         sentimentEl.innerHTML = `<p>${report.sentiment_outlook}</p>`;
     }
 
+    // Tier 2 Sentiment Anomaly Analysis
+    // Renders the LLM-generated root-cause hypotheses for each detected
+    // anomaly window.  Each card shows the anomaly data, a severity badge,
+    // the hypothesis, and a recommended action so TPMs can act immediately.
+    if (report.sentiment_anomaly_analysis && report.sentiment_anomaly_analysis.length) {
+        let anomalyHtml = '<div class="evidence-section" style="margin-top:16px;">';
+        anomalyHtml += '<h4>Sentiment Anomaly Analysis</h4>';
+        report.sentiment_anomaly_analysis.forEach(a => {
+            const analysis = a.analysis || {};
+            const severityColors = { high: '#f85149', medium: '#d29922', low: '#3fb950', unknown: '#8b949e' };
+            const sevColor = severityColors[analysis.severity] || severityColors.unknown;
+            anomalyHtml += `
+                <div style="border-left:3px solid ${sevColor};padding:8px 12px;margin:8px 0;background:#161b22;border-radius:4px;">
+                    <strong>${a.window_start || 'N/A'}</strong>
+                    <span class="risk-badge" style="background:${sevColor};margin-left:8px;padding:2px 8px;border-radius:4px;font-size:11px;">
+                        ${(analysis.severity || 'unknown').toUpperCase()}
+                    </span>
+                    <div style="margin-top:6px;font-size:13px;">
+                        Sentiment: ${(a.avg_sentiment || 0).toFixed(2)} | Z-score: ${(a.z_score || 0).toFixed(1)} | Messages: ${a.message_count || 0}
+                    </div>
+                    <p style="margin:6px 0 2px;"><strong>Hypothesis:</strong> ${analysis.hypothesis || 'N/A'}</p>
+                    ${analysis.recommended_action ? `<p style="margin:2px 0;"><em>Action: ${analysis.recommended_action}</em></p>` : ''}
+                </div>`;
+        });
+        anomalyHtml += '</div>';
+        sentimentEl.innerHTML += anomalyHtml;
+    }
+
     // Metadata
     if (report._metadata) {
         const meta = report._metadata;

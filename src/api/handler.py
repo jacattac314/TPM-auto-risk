@@ -31,6 +31,7 @@ from src.ingestion.slack_crawler import (
     compute_sentiment_timeseries,
     detect_sentiment_anomalies,
 )
+from src.models.drift_monitor import DriftDetector
 from src.models.risk_model import RiskModel
 from src.reporting.report_generator import ReportGenerator
 
@@ -130,6 +131,59 @@ def create_app(settings: AppSettings | None = None) -> Flask:
     @app.route("/health", methods=["GET"])
     def health() -> tuple[Response, int]:
         return jsonify({"status": "healthy", "timestamp": datetime.now(timezone.utc).isoformat()}), 200
+
+    @app.route("/health/detailed", methods=["GET"])
+    def health_detailed() -> tuple[Response, int]:
+        """Deep health check that verifies connectivity to all backend dependencies.
+
+        Probes S3 (data lake), the risk model, and Bedrock. Returns per-service
+        status so operators can pinpoint which dependency is degraded without
+        digging through CloudWatch.
+        """
+        checks: dict[str, dict[str, Any]] = {}
+        overall_healthy = True
+
+        # S3 / Data Lake connectivity
+        try:
+            datalake.read_gold("__healthcheck__")
+            checks["s3_datalake"] = {"status": "ok"}
+        except (OSError, ConnectionError) as e:
+            checks["s3_datalake"] = {"status": "degraded", "detail": str(e)}
+            overall_healthy = False
+        except Exception:
+            checks["s3_datalake"] = {"status": "ok", "detail": "reachable (no data)"}
+
+        # Risk model availability
+        try:
+            model.load_from_s3(settings)
+            checks["risk_model"] = {"status": "ok", "trained": model.is_trained}
+        except FileNotFoundError:
+            checks["risk_model"] = {"status": "missing", "detail": "No model artifacts in S3"}
+            overall_healthy = False
+        except (OSError, ConnectionError) as e:
+            checks["risk_model"] = {"status": "degraded", "detail": str(e)}
+            overall_healthy = False
+        except (ValueError, RuntimeError) as e:
+            checks["risk_model"] = {"status": "error", "detail": str(e)}
+            overall_healthy = False
+
+        # Bedrock LLM connectivity (lightweight ping)
+        try:
+            report_gen._bedrock.invoke("Say OK", model_tier="haiku", max_tokens=4)
+            checks["bedrock_llm"] = {"status": "ok"}
+        except (OSError, ConnectionError) as e:
+            checks["bedrock_llm"] = {"status": "degraded", "detail": str(e)}
+            overall_healthy = False
+        except Exception as e:
+            checks["bedrock_llm"] = {"status": "error", "detail": str(e)}
+            overall_healthy = False
+
+        status_code = 200 if overall_healthy else 503
+        return jsonify({
+            "status": "healthy" if overall_healthy else "degraded",
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "checks": checks,
+        }), status_code
 
     @app.route("/api/v1/projects/<project_key>/risk", methods=["GET"])
     def get_project_risk(project_key: str) -> tuple[Response, int]:
@@ -329,6 +383,41 @@ def create_app(settings: AppSettings | None = None) -> Flask:
 
         except (OSError, ConnectionError) as e:
             logger.exception("Data source error for radar %s: %s", project_key, e)
+            return _error_response("Service temporarily unavailable", 503)
+
+    @app.route("/api/v1/projects/<project_key>/drift", methods=["GET"])
+    def get_drift_status(project_key: str) -> tuple[Response, int]:
+        """Report feature drift status for the current model on a given project.
+
+        Compares the distribution of live Gold-layer features against the
+        baseline statistics saved during training.  Returns per-feature drift
+        flags and an overall drift percentage so operators and the dashboard
+        can decide whether retraining is needed.
+        """
+        validation_err = _validate_project_key(project_key)
+        if validation_err:
+            return _error_response(validation_err, 400)
+
+        try:
+            features_df = datalake.read_gold(project_key)
+            if features_df.empty:
+                return _error_response("No feature data to evaluate drift", 404)
+
+            model_err = _load_model()
+            if model_err:
+                return model_err
+
+            detector = DriftDetector(settings)
+            drift_report = detector.check_drift(features_df, model)
+
+            return jsonify({
+                "project_key": project_key,
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                **drift_report,
+            }), 200
+
+        except (OSError, ConnectionError) as e:
+            logger.exception("Drift check error for %s: %s", project_key, e)
             return _error_response("Service temporarily unavailable", 503)
 
     @app.route("/api/v1/reports/<project_key>/feedback", methods=["POST"])

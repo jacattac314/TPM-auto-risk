@@ -32,6 +32,11 @@ Parameters:
     Default: PROJ
     Description: Comma-separated list of project keys for model training
 
+  DashboardOrigin:
+    Type: String
+    Default: "'https://risk-radar.internal.company.com'"
+    Description: Allowed CORS origin for API Gateway (use '*' only for dev)
+
   VpcId:
     Type: AWS::EC2::VPC::Id
     Description: VPC for network-isolated deployment
@@ -269,7 +274,7 @@ Resources:
     Properties:
       StageName: !Ref Environment
       Cors:
-        AllowOrigin: "'*'"
+        AllowOrigin: !Ref DashboardOrigin
         AllowMethods: "'GET,POST,OPTIONS'"
         AllowHeaders: "'Content-Type,Authorization'"
 

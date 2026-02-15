@@ -102,6 +102,21 @@ def engineer_jira_features(tickets: list[dict[str, Any]]) -> pd.DataFrame:
     # In production, this would use the Jira changelog
     df["ticket_churn"] = df["sprint_rollover_count"] + (df["comment_count"] / 5).astype(int)
 
+    # ---- Feature: assignee_churn ----
+    # Counts the number of unique assignees a ticket has had.  High churn
+    # signals coordination overhead, unclear ownership, or scope mismatch.
+    # In production this comes from the Jira changelog; here we approximate
+    # it from comment activity and sprint rollovers as a proxy.
+    df["assignee_churn"] = (df["sprint_rollover_count"] > 0).astype(int) + (
+        (df["comment_count"] > 10).astype(int)
+    )
+
+    # ---- Feature: blocker_dependency_ratio ----
+    # Fraction of a ticket's dependencies that are "Blocks" type (vs.
+    # "Relates" or "Duplicates").  A high ratio means the ticket has hard
+    # upstream/downstream coupling that can cascade delays.
+    df["blocker_dependency_ratio"] = df["issue_links"].apply(_compute_blocker_ratio)
+
     # ---- Feature: issue_type_risk ----
     issue_type_risk = {
         "Bug": 0.7,
@@ -217,6 +232,8 @@ def get_model_feature_columns() -> list[str]:
         "description_word_count",
         "sprint_rollover_count",
         "ticket_churn",
+        "assignee_churn",
+        "blocker_dependency_ratio",
         "issue_type_risk",
         "status_category_encoded",
         "complexity_per_person",
@@ -267,6 +284,20 @@ def _get_current_sprint_name(sprint_history: Any) -> str | None:
     if isinstance(last, dict):
         return last.get("sprint_name")
     return None
+
+
+def _compute_blocker_ratio(links: Any) -> float:
+    """Compute the fraction of issue links that are blocker-type dependencies.
+
+    Returns 0.0 when there are no links.
+    """
+    if not isinstance(links, list) or not links:
+        return 0.0
+    blocker_count = sum(
+        1 for link in links
+        if isinstance(link, dict) and link.get("type", "").lower() in ("blocks", "is blocked by")
+    )
+    return round(blocker_count / len(links), 2)
 
 
 def _count_feature_cols(df: pd.DataFrame) -> int:

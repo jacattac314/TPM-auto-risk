@@ -15,9 +15,18 @@ const COLORS = {
 /**
  * Load project risk data from the API and populate the dashboard.
  */
+/**
+ * Load project risk data from the API and populate the dashboard.
+ *
+ * Shows a spinner overlay while requests are in flight and renders
+ * an error banner at the top of the page if any request fails, so
+ * users immediately see what went wrong instead of staring at empty tables.
+ */
 async function loadProjectData(projectKey) {
+    showLoadingSpinner(true);
+    dismissBanner();
+
     try {
-        // Fetch risk data and radar data in parallel
         const [riskResp, radarResp] = await Promise.all([
             fetch(`/api/v1/projects/${projectKey}/risk`),
             fetch(`/api/v1/projects/${projectKey}/radar`),
@@ -27,6 +36,10 @@ async function loadProjectData(projectKey) {
             const riskData = await riskResp.json();
             renderRiskSummary(riskData.summary);
             renderRiskTable(riskData.tickets);
+        } else if (riskResp.status === 401) {
+            showBanner('Authentication failed. Check your API key.', 'error');
+        } else if (riskResp.status === 429) {
+            showBanner('Rate limit exceeded. Please wait and try again.', 'warn');
         } else {
             renderError('risk-table-body', 'No risk data available. Ingest Jira data first.');
         }
@@ -37,8 +50,57 @@ async function loadProjectData(projectKey) {
         }
     } catch (err) {
         console.error('Failed to load project data:', err);
+        showBanner('Failed to connect to the API. Is the backend running?', 'error');
         renderError('risk-table-body', 'Failed to connect to the API.');
+    } finally {
+        showLoadingSpinner(false);
     }
+}
+
+/**
+ * Toggle a loading spinner overlay on the main content area.
+ * Creates the spinner element lazily on first call.
+ */
+function showLoadingSpinner(show) {
+    let spinner = document.getElementById('loading-spinner');
+    if (!spinner) {
+        spinner = document.createElement('div');
+        spinner.id = 'loading-spinner';
+        spinner.style.cssText =
+            'position:fixed;top:0;left:0;width:100%;height:100%;' +
+            'background:rgba(15,20,25,.7);display:flex;align-items:center;' +
+            'justify-content:center;z-index:200;';
+        spinner.innerHTML =
+            '<div style="border:4px solid #2d3548;border-top:4px solid #58a6ff;' +
+            'border-radius:50%;width:40px;height:40px;animation:spin 0.8s linear infinite;"></div>' +
+            '<style>@keyframes spin{to{transform:rotate(360deg)}}</style>';
+        document.body.appendChild(spinner);
+    }
+    spinner.style.display = show ? 'flex' : 'none';
+}
+
+/**
+ * Show a dismissible banner at the top of the page for errors or warnings.
+ * Communicates API issues (auth failures, rate limiting, network errors)
+ * to users in a prominent but non-blocking way.
+ */
+function showBanner(message, level) {
+    dismissBanner();
+    const colors = { error: '#f85149', warn: '#d29922', info: '#58a6ff' };
+    const banner = document.createElement('div');
+    banner.id = 'status-banner';
+    banner.style.cssText =
+        `position:fixed;top:0;left:0;width:100%;padding:10px 20px;` +
+        `background:${colors[level] || colors.info};color:#fff;font:14px sans-serif;` +
+        `text-align:center;z-index:300;cursor:pointer;`;
+    banner.textContent = message + '  (click to dismiss)';
+    banner.onclick = () => banner.remove();
+    document.body.prepend(banner);
+}
+
+function dismissBanner() {
+    const existing = document.getElementById('status-banner');
+    if (existing) existing.remove();
 }
 
 /**
@@ -199,6 +261,67 @@ function renderRadarChart(points) {
         ctx.font = '12px -apple-system, sans-serif';
         ctx.textAlign = 'left';
         ctx.fillText(level + ' Risk', legendX + 14, legendY + i * 22 + 4);
+    });
+
+    // Attach interactive tooltip for ticket details on hover
+    attachRadarTooltip(canvas, points, scaleX, scaleY);
+}
+
+/**
+ * Attach tooltip hover behavior to the radar canvas.
+ *
+ * Tracks mouse position and checks proximity to each rendered bubble.
+ * When the cursor is within a bubble's radius the tooltip <div> is
+ * positioned beside the cursor and populated with ticket details
+ * (key, risk score, status, assignee).  Moving away hides the tooltip.
+ */
+function attachRadarTooltip(canvas, points, scaleX, scaleY) {
+    let tooltip = document.getElementById('radar-tooltip');
+    if (!tooltip) {
+        tooltip = document.createElement('div');
+        tooltip.id = 'radar-tooltip';
+        tooltip.style.cssText =
+            'position:absolute;pointer-events:none;background:#1a1f2e;' +
+            'border:1px solid #2d3548;border-radius:6px;padding:8px 12px;' +
+            'color:#e1e4e8;font:12px monospace;display:none;z-index:100;' +
+            'box-shadow:0 4px 12px rgba(0,0,0,.4);max-width:250px;';
+        document.body.appendChild(tooltip);
+    }
+
+    canvas.addEventListener('mousemove', (e) => {
+        const rect = canvas.getBoundingClientRect();
+        const mx = e.clientX - rect.left;
+        const my = e.clientY - rect.top;
+
+        let hit = null;
+        for (const p of points) {
+            const cx = scaleX(p.x);
+            const cy = scaleY(p.y);
+            const r = Math.max(4, Math.min(p.size * 3, 30));
+            const dist = Math.sqrt((mx - cx) ** 2 + (my - cy) ** 2);
+            if (dist <= r) { hit = p; break; }
+        }
+
+        if (hit) {
+            tooltip.innerHTML =
+                `<strong>${hit.issue_key}</strong><br>` +
+                `${hit.summary || ''}<br>` +
+                `<span style="color:${COLORS[hit.color]}">${hit.color} Risk</span> ` +
+                `(${(hit.risk_score * 100).toFixed(0)}%)<br>` +
+                `Status: ${hit.status || '-'} (${hit.days_in_status.toFixed(0)}d)<br>` +
+                `Assignee: ${hit.assignee || 'Unassigned'}`;
+            tooltip.style.display = 'block';
+            tooltip.style.left = (e.pageX + 14) + 'px';
+            tooltip.style.top = (e.pageY - 10) + 'px';
+            canvas.style.cursor = 'pointer';
+        } else {
+            tooltip.style.display = 'none';
+            canvas.style.cursor = 'default';
+        }
+    });
+
+    canvas.addEventListener('mouseleave', () => {
+        tooltip.style.display = 'none';
     });
 }
 
