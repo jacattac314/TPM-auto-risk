@@ -348,4 +348,10 @@ class AlertPublisher:
             TopicArn=self._topic_arn,
             Subject="[Auto-TPM] Model Drift Alert - Retraining Recommended",
             Message=json.dumps(message, indent=2),
+            MessageAttributes={
+                "alert_type": {
+                    "DataType": "String",
+                    "StringValue": "MODEL_DRIFT_DETECTED",
+                },
+            },
         )

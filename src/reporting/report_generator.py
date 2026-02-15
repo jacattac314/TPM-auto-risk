@@ -132,6 +132,17 @@ class ReportGenerator:
         # Parse JSON response
         report = self._parse_json_response(raw_response)
 
+        # Tier 2: LLM analysis of sentiment anomalies
+        enriched_anomalies: list[dict[str, Any]] = []
+        if anomalies:
+            try:
+                enriched_anomalies = self.analyze_sentiment_anomalies(
+                    anomalies, project_name
+                )
+                report["sentiment_anomaly_analysis"] = enriched_anomalies
+            except (OSError, ConnectionError):
+                logger.warning("Tier 2 anomaly analysis unavailable for %s", project_name)
+
         # Add metadata
         report["_metadata"] = {
             "project_name": project_name,
@@ -143,6 +154,7 @@ class ReportGenerator:
                 "medium": sum(1 for p in predictions if p.get("risk_level") == "Medium"),
                 "low": sum(1 for p in predictions if p.get("risk_level") == "Low"),
             },
+            "anomalies_analyzed": len(enriched_anomalies),
         }
 
         return report
@@ -200,6 +212,55 @@ class ReportGenerator:
         )
 
         return self._bedrock.invoke(prompt, model_tier="haiku", temperature=0.1, max_tokens=256)
+
+    def analyze_sentiment_anomalies(
+        self,
+        anomalies: list[dict[str, Any]],
+        project_name: str,
+    ) -> list[dict[str, Any]]:
+        """Tier 2: Use LLM to provide contextual analysis of sentiment anomalies.
+
+        Sends detected anomaly windows to Haiku for root-cause hypotheses,
+        producing actionable insights that feed into the executive report.
+
+        Args:
+            anomalies: Detected anomalies from detect_sentiment_anomalies().
+            project_name: Project name for context.
+
+        Returns:
+            List of enriched anomaly dicts with an 'analysis' field.
+        """
+        if not anomalies:
+            return []
+
+        enriched: list[dict[str, Any]] = []
+        for anomaly in anomalies[:5]:  # Cap at 5 to control costs
+            prompt = (
+                f"You are a senior TPM analyzing team communication signals for "
+                f"project '{project_name}'.\n\n"
+                f"A sentiment anomaly was detected:\n"
+                f"- Time window: {anomaly.get('window_start', 'N/A')}\n"
+                f"- Average sentiment: {anomaly.get('avg_sentiment', 0):.3f}\n"
+                f"- Z-score: {anomaly.get('z_score', 0):.2f}\n"
+                f"- Message count: {anomaly.get('message_count', 0)}\n\n"
+                f"Based on this data, provide a 2-sentence hypothesis about "
+                f"what might have caused the drop and one recommended action. "
+                f"Output valid JSON with keys: \"hypothesis\", \"recommended_action\", "
+                f"\"severity\" (one of: low, medium, high)."
+            )
+
+            try:
+                raw = self._bedrock.invoke(
+                    prompt, model_tier="haiku", temperature=0.1, max_tokens=256
+                )
+                analysis = self._parse_json_response(raw)
+            except (OSError, ConnectionError):
+                logger.warning("Bedrock unavailable for anomaly analysis")
+                analysis = {"hypothesis": "LLM analysis unavailable", "severity": "unknown"}
+
+            enriched.append({**anomaly, "analysis": analysis})
+
+        return enriched
 
     def _parse_json_response(self, raw: str) -> dict[str, Any]:
         """Parse a JSON response from the LLM, handling common formatting issues."""

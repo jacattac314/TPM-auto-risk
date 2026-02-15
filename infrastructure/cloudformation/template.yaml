@@ -27,6 +27,11 @@ Parameters:
     Type: String
     Default: anthropic.claude-3-sonnet-20240229-v1:0
 
+  TrainingProjectKeys:
+    Type: String
+    Default: PROJ
+    Description: Comma-separated list of project keys for model training
+
   VpcId:
     Type: AWS::EC2::VPC::Id
     Description: VPC for network-isolated deployment
@@ -275,6 +280,39 @@ Resources:
     Properties:
       TopicName: !Sub 'tpm-risk-radar-alerts-${Environment}'
       KmsMasterKeyId: !Ref DataLakeKMSKey
+
+  # ── Model Retraining (triggered by drift alerts) ─────────────────
+
+  ModelRetrainingFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub 'tpm-model-retrain-${Environment}'
+      Handler: scripts.train_model.lambda_handler
+      CodeUri: ../
+      MemorySize: 2048
+      Timeout: 900
+      Environment:
+        Variables:
+          TRAINING_PROJECT_KEYS: !Ref TrainingProjectKeys
+      Policies:
+        - S3CrudPolicy:
+            BucketName: !Ref DataLakeBucket
+        - DynamoDBReadPolicy:
+            TableName: !Ref IngestionStateTable
+        - Statement:
+            Effect: Allow
+            Action:
+              - kms:Decrypt
+              - kms:GenerateDataKey
+            Resource: !GetAtt DataLakeKMSKey.Arn
+      Events:
+        DriftAlert:
+          Type: SNS
+          Properties:
+            Topic: !Ref AlertTopic
+            FilterPolicy:
+              alert_type:
+                - MODEL_DRIFT_DETECTED
 
   # ── SageMaker Model Training ─────────────────────────────────────
 

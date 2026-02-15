@@ -101,12 +101,25 @@ class ComprehendPIIRedactor:
                     Text=chunk, LanguageCode=self._language_code
                 )
             except self._client.exceptions.TextSizeLimitExceededException:
-                logger.warning("Text chunk exceeded Comprehend limit, skipping PII detection")
+                logger.error(
+                    "Text chunk exceeded Comprehend limit (%d bytes), PII may be unredacted",
+                    len(chunk.encode("utf-8")),
+                )
                 redacted_parts.append(chunk)
+                all_entities.append({"Type": "_REDACTION_SKIPPED", "Score": 0.0})
+                continue
+            except (
+                self._client.exceptions.InternalServerException,
+                self._client.exceptions.InvalidRequestException,
+            ) as e:
+                logger.error("Comprehend PII detection failed: %s", e)
+                redacted_parts.append(chunk)
+                all_entities.append({"Type": "_REDACTION_FAILED", "Score": 0.0})
                 continue
             except Exception:
-                logger.exception("Comprehend PII detection failed")
+                logger.exception("Unexpected Comprehend PII detection failure")
                 redacted_parts.append(chunk)
+                all_entities.append({"Type": "_REDACTION_FAILED", "Score": 0.0})
                 continue
 
             entities = response.get("Entities", [])
@@ -196,10 +209,12 @@ def redact_record(
             if result["pii_detected"]:
                 pii_summary.extend(result["entities_found"])
 
+    redaction_failed = any(e["type"].startswith("_REDACTION_") for e in pii_summary)
     redacted["_pii_redaction"] = {
         "fields_scanned": text_fields,
         "pii_detected": len(pii_summary) > 0,
-        "entity_types_found": list({e["type"] for e in pii_summary}),
+        "entity_types_found": list({e["type"] for e in pii_summary if not e["type"].startswith("_")}),
+        "redaction_incomplete": redaction_failed,
     }
 
     return redacted
